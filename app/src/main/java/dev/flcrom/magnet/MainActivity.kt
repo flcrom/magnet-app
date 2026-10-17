@@ -213,6 +213,7 @@ class Renderer(private val S: State) : GLSurfaceView.Renderer {
     private var prog = 0
     private var w = 1; private var h = 1
     private var tPrev = SystemClock.elapsedRealtime()
+    private var px = 0f; private var py = 0f; private var pvx = 0f; private var pvy = 0f; private var wob = 0f; private var uWob = 0
     private var sAng = 0f; private var sLean = 0f; private var ssc = 1f; private val rs = floatArrayOf(0f, 0f, 0f)
     private var uRes = 0; private var uT = 0; private var uDir = 0; private var uLean = 0; private var uSc = 0
     private val tri = ByteBuffer.allocateDirect(24).order(ByteOrder.nativeOrder()).asFloatBuffer().apply { put(floatArrayOf(-1f, -1f, 3f, -1f, -1f, 3f)); position(0) }
@@ -226,7 +227,7 @@ class Renderer(private val S: State) : GLSurfaceView.Renderer {
         GLES30.glAttachShader(prog, sh(GLES30.GL_VERTEX_SHADER, vs)); GLES30.glAttachShader(prog, sh(GLES30.GL_FRAGMENT_SHADER, FS))
         GLES30.glLinkProgram(prog); GLES30.glUseProgram(prog)
         uRes = GLES30.glGetUniformLocation(prog, "res"); uT = GLES30.glGetUniformLocation(prog, "t")
-        uDir = GLES30.glGetUniformLocation(prog, "dir"); uLean = GLES30.glGetUniformLocation(prog, "lean"); uSc = GLES30.glGetUniformLocation(prog, "sc")
+        uDir = GLES30.glGetUniformLocation(prog, "dir"); uLean = GLES30.glGetUniformLocation(prog, "lean"); uSc = GLES30.glGetUniformLocation(prog, "sc"); uWob = GLES30.glGetUniformLocation(prog, "wob")
     }
     override fun onSurfaceChanged(g: GL10?, W: Int, H: Int) { w = W; h = H; GLES30.glViewport(0, 0, W, H) }
 
@@ -272,11 +273,21 @@ class Renderer(private val S: State) : GLSurfaceView.Renderer {
         val dl = ((tl - sLean) * (1f - exp(-dt / tau))).coerceIn(-1.2f * dt, 1.2f * dt)
         sLean += dl
         ssc += (sc - ssc) * (1f - exp(-dt / 0.6f))
-        val ux = sin(sAng); val uy = cos(sAng); val m = sLean
+        // water: damped spring toward the smoothed target, its speed drives wobble and ripples
+        val tx = sin(sAng) * sLean; val ty = cos(sAng) * sLean; val wn = 7f; val zt = 0.5f
+        val n = max(1, ceil(dt / 0.008f).toInt()); val hh = dt / n
+        for (i in 0 until n) {
+            pvx += (wn * wn * (tx - px) - 2 * zt * wn * pvx) * hh; pvy += (wn * wn * (ty - py) - 2 * zt * wn * pvy) * hh
+            px += pvx * hh; py += pvy * hh
+        }
+        val spd = min(1f, hypot(pvx, pvy) * 1.1f)
+        wob += (spd - wob) * (1f - exp(-dt / (if (spd > wob) 0.08f else 0.7f)))
+        val pm = hypot(px, py)
+        val m = min(1f, pm); val ux = if (pm > 1e-3f) px / pm else 0f; val uy = if (pm > 1e-3f) py / pm else 0f
         GLES30.glClearColor(0f, 0f, 0f, 1f); GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
         GLES30.glUseProgram(prog)
         GLES30.glUniform2f(uRes, w.toFloat(), h.toFloat()); GLES30.glUniform1f(uT, now / 1000f % 3600f)
-        GLES30.glUniform2f(uDir, ux, uy); GLES30.glUniform1f(uLean, min(1f, m)); GLES30.glUniform1f(uSc, ssc)
+        GLES30.glUniform2f(uDir, ux, uy); GLES30.glUniform1f(uLean, min(1f, m)); GLES30.glUniform1f(uSc, ssc); GLES30.glUniform1f(uWob, wob)
         val loc = GLES30.glGetAttribLocation(prog, "p")
         GLES30.glEnableVertexAttribArray(loc); GLES30.glVertexAttribPointer(loc, 2, GLES30.GL_FLOAT, false, 0, tri)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
@@ -285,14 +296,14 @@ class Renderer(private val S: State) : GLSurfaceView.Renderer {
     companion object {
         val FS = """#version 300 es
 precision highp float;
-uniform vec2 res; uniform float t; uniform vec2 dir; uniform float lean; uniform float sc;
+uniform vec2 res; uniform float t; uniform vec2 dir; uniform float lean; uniform float sc; uniform float wob;
 out vec4 o;
 float smin(float a,float b,float k){float h=max(k-abs(a-b),0.)/k;return min(a,b)-h*h*k*.25;}
 float sdf(vec2 p){
   float R=.27*sc;
   vec2 c0=-dir*lean*.04;
   float a=atan(p.y,p.x);
-  float w=.004*sin(a*3.+t*1.1)+.003*sin(a*5.-t*1.7)+lean*.006*sin(a*7.+t*3.);
+  float w=.004*sin(a*3.+t*1.1)+.003*sin(a*5.-t*1.7)+lean*.006*sin(a*7.+t*3.)+wob*(.010*sin(a*2.+t*5.)+.007*sin(a*3.-t*6.5));
   float d1=length(p-c0)-R-w;
   float r2=R*(.18+.42*lean);
   vec2 c1=c0+dir*R*(.55+.95*lean);
@@ -305,7 +316,7 @@ float H(vec2 p){
   float u=clamp(d/.17,0.,1.);
   float rim=.13*sqrt(1.-(1.-u)*(1.-u));
   float bump=.07*exp(-dot(p+dir*lean*.05,p+dir*lean*.05)/.045);
-  return rim+bump*smoothstep(0.,.08,d);
+  return rim+bump*smoothstep(0.,.08,d)+wob*.010*sin(length(p)*38.-t*7.)*smoothstep(0.,.1,d);
 }
 float env(vec3 r){
   float up=r.y*.5+.5;
