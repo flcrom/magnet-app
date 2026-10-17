@@ -170,9 +170,10 @@ class MetalView(ctx: Context, private val S: State, private val onZero: () -> Un
         // footer touch zones
         val fy = h - footerH
         val bw = 74 * dp
-        zeroRect = RectF(w - pad - 3 * bw, fy, w - pad - 2 * bw, h)
-        flipRect = RectF(w - pad - 2 * bw, fy, w - pad - bw, h)
-        demoRect = RectF(w - pad - bw, fy, w - pad, h)
+        val hf = h.toFloat()
+        zeroRect = RectF(w - pad - 3 * bw, fy, w - pad - 2 * bw, hf)
+        flipRect = RectF(w - pad - 2 * bw, fy, w - pad - bw, hf)
+        demoRect = RectF(w - pad - bw, fy, w - pad, hf)
     }
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
