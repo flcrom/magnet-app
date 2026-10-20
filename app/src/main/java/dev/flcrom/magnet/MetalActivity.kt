@@ -112,6 +112,8 @@ class MetalView(ctx: Context, private val S: State, private val onZero: () -> Un
     private var toggleOn = true
     private var knobT = 1f
     private var sliderFrac = 0.62f
+    private var style = 0  // preview: 0=reach 1=spikes 2=dents
+    private var demoDownAt = 0L
     private var hint = ""; private var hintUntil = 0L
     private val cmps = mutableListOf<Cmp>()
     private var zeroRect = RectF(); private var flipRect = RectF(); private var demoRect = RectF()
@@ -191,7 +193,7 @@ class MetalView(ctx: Context, private val S: State, private val onZero: () -> Un
             MotionEvent.ACTION_DOWN -> {
                 if (zeroRect.contains(e.x, e.y)) { onZero(); return true }
                 if (flipRect.contains(e.x, e.y)) { onFlip(); return true }
-                if (demoRect.contains(e.x, e.y)) { demo = !demo; say(if (demo) "demo orbit on" else "demo orbit off"); return true }
+                if (demoRect.contains(e.x, e.y)) { demoDownAt = SystemClock.elapsedRealtime(); return true }
                 pressedCmp = cmps.firstOrNull { it.rect.contains(e.x, e.y) }
                 pressedCmp?.let {
                     pressX = e.x; pressY = e.y
@@ -212,6 +214,15 @@ class MetalView(ctx: Context, private val S: State, private val onZero: () -> Un
                 if (touchX >= 0) { touchX = e.x; touchY = e.y }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (demoDownAt > 0) {
+                    val held = SystemClock.elapsedRealtime() - demoDownAt; demoDownAt = 0
+                    if (e.actionMasked == MotionEvent.ACTION_UP && held > 600) {
+                        style = (style + 1) % 3
+                        say("style: " + arrayOf("reach", "spikes", "dents")[style])
+                    } else if (e.actionMasked == MotionEvent.ACTION_UP) {
+                        demo = !demo; say(if (demo) "demo orbit on" else "demo orbit off")
+                    }
+                }
                 pressedCmp?.let {
                     if (it.kind == "toggle") { toggleOn = !toggleOn; say(if (toggleOn) "on" else "off") }
                     pressedCmp = null
@@ -419,8 +430,22 @@ class MetalView(ctx: Context, private val S: State, private val onZero: () -> Un
             val phi = atan2(y - cy, x - cx)
             var d = phi - c.a; d = atan2(sin(d), cos(d))
             var db = phi - (c.a + Math.PI.toFloat()); db = atan2(sin(db), cos(db))
-            var disp = amp * exp(-d * d / sig2) - 0.38f * amp * exp(-db * db / sig2)
-            if (rip != 0f) disp += rip * sin(3f * phi + ph)
+            var disp = when (style) {
+                1 -> { // spikes: three sharp lobes around the facing direction
+                    var s = 1.25f * amp * exp(-d * d / (sig2 * 0.22f))
+                    var d1 = d - 0.62f; d1 = atan2(sin(d1), cos(d1)); s += 0.65f * amp * exp(-d1 * d1 / (sig2 * 0.18f))
+                    var d2 = d + 0.62f; d2 = atan2(sin(d2), cos(d2)); s += 0.65f * amp * exp(-d2 * d2 / (sig2 * 0.18f))
+                    s - 0.30f * amp * exp(-db * db / sig2)
+                }
+                2 -> { // dents: travelling inward dents, slight swell toward the magnet
+                    val travel = phi - ph * 0.6f
+                    (0.35f * amp * exp(-d * d / sig2)
+                        - amp * (0.55f + 0.45f * sin(2f * travel)) * exp(-d * d / (sig2 * 0.5f))
+                        - 0.30f * amp * exp(-db * db / sig2))
+                }
+                else -> amp * exp(-d * d / sig2) - 0.38f * amp * exp(-db * db / sig2) // reach
+            }
+            if (rip != 0f) disp += (if (style == 1) 1.8f else 1f) * rip * sin(3f * phi + ph)
             var nx = x + dx * disp; var ny = y + dy * disp
             if (dipA > 0f) {
                 var dd = phi - pphi; dd = atan2(sin(dd), cos(dd))
@@ -443,7 +468,7 @@ class MetalView(ctx: Context, private val S: State, private val onZero: () -> Un
         pText.letterSpacing = 0f; pText.typeface = Typeface.DEFAULT
         pDim.textSize = 10.5f * dp
         pDim.textAlign = Paint.Align.RIGHT
-        cv.drawText(status, w - pad, 25 * dp, pDim)
+        cv.drawText(status + " · " + arrayOf("reach", "spikes", "dents")[style], w - pad, 25 * dp, pDim)
         pDim.textAlign = Paint.Align.LEFT
 
         for (c in cmps) {
