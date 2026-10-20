@@ -10,6 +10,7 @@ import android.hardware.SensorManager
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.Choreographer
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
@@ -87,6 +88,8 @@ class MetalActivity : Activity(), SensorEventListener {
 
 private class Cmp(val kind: String, val rect: RectF) {
     var inf = 0f; var a = -1.5708f; var tx = 0f; var ty = 0f
+    var outline: FloatArray? = null
+    var press = 0f
 }
 
 class MetalView(ctx: Context, private val S: State, private val onZero: () -> Unit, private val onFlip: () -> Unit) :
@@ -99,9 +102,16 @@ class MetalView(ctx: Context, private val S: State, private val onZero: () -> Un
     private var sAng = 0f; private var sLean = 0f
     private var px = 0f; private var py = 0f; private var pvx = 0f; private var pvy = 0f
     private var wob = 0f
+    private var tSec = 0f
     private var auto = true
     private var demo = false
     private var touchX = -1f; private var touchY = -1f
+    private var pressedCmp: Cmp? = null
+    private var pressX = 0f; private var pressY = 0f
+    private var segSel = 1
+    private var toggleOn = true
+    private var knobT = 1f
+    private var sliderFrac = 0.62f
     private var hint = ""; private var hintUntil = 0L
     private val cmps = mutableListOf<Cmp>()
     private var zeroRect = RectF(); private var flipRect = RectF(); private var demoRect = RectF()
@@ -182,10 +192,32 @@ class MetalView(ctx: Context, private val S: State, private val onZero: () -> Un
                 if (zeroRect.contains(e.x, e.y)) { onZero(); return true }
                 if (flipRect.contains(e.x, e.y)) { onFlip(); return true }
                 if (demoRect.contains(e.x, e.y)) { demo = !demo; say(if (demo) "demo orbit on" else "demo orbit off"); return true }
+                pressedCmp = cmps.firstOrNull { it.rect.contains(e.x, e.y) }
+                pressedCmp?.let {
+                    pressX = e.x; pressY = e.y
+                    performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                    if (it.kind == "slider") sliderFrac = ((e.x - it.rect.left) / it.rect.width()).coerceIn(0.04f, 0.96f)
+                    if (it.kind == "seg") segSel = (((e.x - it.rect.left) / it.rect.width()) * 3).toInt().coerceIn(0, 2)
+                    return true
+                }
                 touchX = e.x; touchY = e.y
             }
-            MotionEvent.ACTION_MOVE -> { if (touchX >= 0) { touchX = e.x; touchY = e.y } }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { touchX = -1f; touchY = -1f }
+            MotionEvent.ACTION_MOVE -> {
+                pressedCmp?.let {
+                    pressX = e.x; pressY = e.y
+                    if (it.kind == "slider") sliderFrac = ((e.x - it.rect.left) / it.rect.width()).coerceIn(0.04f, 0.96f)
+                    if (it.kind == "seg") segSel = (((e.x - it.rect.left) / it.rect.width()) * 3).toInt().coerceIn(0, 2)
+                    return true
+                }
+                if (touchX >= 0) { touchX = e.x; touchY = e.y }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                pressedCmp?.let {
+                    if (it.kind == "toggle") { toggleOn = !toggleOn; say(if (toggleOn) "on" else "off") }
+                    pressedCmp = null
+                }
+                touchX = -1f; touchY = -1f
+            }
         }
         return true
     }
@@ -193,6 +225,7 @@ class MetalView(ctx: Context, private val S: State, private val onZero: () -> Un
     override fun doFrame(frameTimeNanos: Long) {
         if (!running) return
         val now = SystemClock.elapsedRealtime()
+        tSec = now / 1000f
         val dt = min(0.05f, (now - tPrev) / 1000f); tPrev = now
         step(now, dt)
         invalidate()
@@ -250,9 +283,12 @@ class MetalView(ctx: Context, private val S: State, private val onZero: () -> Un
         val spd = min(1f, hypot(pvx, pvy) * 1.1f)
         wob += (spd - wob) * (1f - exp(-dt / (if (spd > wob) 0.08f else 0.7f)))
 
+        knobT += (((if (toggleOn) 1f else 0f) - knobT) * (1f - exp(-dt / 0.15f)))
         val mx = w / 2 + px * R; val my = h / 2 - py * R
         val magAmt = min(1f, hypot(px, py))
         for (c in cmps) {
+            val pT = if (c === pressedCmp) 1f else 0f
+            c.press += (pT - c.press) * (1f - exp(-dt / 0.12f))
             val cx = c.rect.centerX(); val cy = c.rect.centerY()
             val vx = mx - cx; val vy = my - cy; val dist = hypot(vx, vy).coerceAtLeast(1f)
             val fall = ((520 * dp - dist) / (320 * dp)).coerceIn(0f, 1f)
@@ -283,11 +319,17 @@ class MetalView(ctx: Context, private val S: State, private val onZero: () -> Un
             color = Color.WHITE; alpha = (0.10f * c.inf * 255).toInt()
             maskFilter = BlurMaskFilter(12 * dp, BlurMaskFilter.Blur.NORMAL)
         }
-        val r = RectF(c.rect); r.offset(ox, oy)
-        cv.drawRoundRect(r, rad, rad, p)
+        cv.save(); cv.translate(ox, oy); cv.drawPath(deformed(c, rad), p); cv.restore()
     }
 
     private fun metalFill(cv: Canvas, c: Cmp, rad: Float, ghost: Boolean = false) {
+        val c0 = c; val infSave = c.inf
+        c.inf = (c.inf + 0.55f * c.press).coerceIn(0f, 1f)
+        metalFillInner(cv, c, rad, ghost)
+        c0.inf = infSave
+    }
+
+    private fun metalFillInner(cv: Canvas, c: Cmp, rad: Float, ghost: Boolean) {
         val r = c.rect
         val fx = cos(c.a); val fy = sin(c.a)
         val cx = r.centerX(); val cy = r.centerY()
@@ -301,7 +343,8 @@ class MetalView(ctx: Context, private val S: State, private val onZero: () -> Un
             base.shader = LinearGradient(cx + fx * L, cy + fy * L, cx - fx * L, cy - fy * L,
                 intArrayOf(lerpColor(Color.rgb(23, 26, 29), Color.rgb(58, 64, 71), c.inf), Color.rgb(10, 11, 12)), null, Shader.TileMode.CLAMP)
         }
-        cv.drawRoundRect(r, rad, rad, base)
+        val shape = deformed(c, rad)
+        cv.drawPath(shape, base)
         // hotspot on the facing edge
         if (c.inf > 0.02f && !ghost) {
             val hx = cx + fx * r.width() * 0.58f * c.inf.coerceAtMost(1f)
@@ -311,7 +354,7 @@ class MetalView(ctx: Context, private val S: State, private val onZero: () -> Un
                     intArrayOf(withAlpha(Color.WHITE, 0.50f * c.inf), withAlpha(Color.WHITE, 0.10f * c.inf), Color.TRANSPARENT),
                     floatArrayOf(0f, 0.4f, 1f), Shader.TileMode.CLAMP)
             }
-            cv.save(); cv.clipPath(roundPath(r, rad)); cv.drawRect(r, hp); cv.restore()
+            cv.save(); cv.clipPath(deformed(c, rad)); cv.drawRect(r, hp); cv.restore()
         }
         // rim: sweep brightest toward the magnet
         val bright = withAlpha(Color.WHITE, (if (ghost) 0.16f else 0.28f) + (if (ghost) 0.5f else 0.72f) * c.inf)
@@ -323,9 +366,7 @@ class MetalView(ctx: Context, private val S: State, private val onZero: () -> Un
             val m = Matrix(); m.setRotate(Math.toDegrees(c.a.toDouble()).toFloat(), cx, cy); setLocalMatrix(m)
         }
         pStroke.strokeWidth = 1.2f * dp
-        val inset = pStroke.strokeWidth / 2
-        val rr = RectF(r.left + inset, r.top + inset, r.right - inset, r.bottom - inset)
-        cv.drawRoundRect(rr, rad, rad, pStroke)
+        cv.drawPath(deformed(c, rad), pStroke)
         pStroke.shader = null
     }
 
@@ -348,6 +389,51 @@ class MetalView(ctx: Context, private val S: State, private val onZero: () -> Un
         tmp.reset(); tmp.addRoundRect(r, rad, rad, Path.Direction.CW); return tmp
     }
 
+    private fun baseOutline(c: Cmp, rad: Float): FloatArray {
+        c.outline?.let { return it }
+        val n = 72
+        val pts = FloatArray(n * 2)
+        val path = Path(); path.addRoundRect(c.rect, rad, rad, Path.Direction.CW)
+        val pm = PathMeasure(path, true)
+        val plen = pm.length; val pos = FloatArray(2)
+        for (i in 0 until n) { pm.getPosTan(plen * i / n, pos, null); pts[i * 2] = pos[0]; pts[i * 2 + 1] = pos[1] }
+        c.outline = pts; return pts
+    }
+
+    // ferrofluid boundary: facing edge reaches toward the magnet, far edge dimples in, small animated ripple
+    private fun deformed(c: Cmp, rad: Float): Path {
+        val pts = baseOutline(c, rad)
+        val cx = c.rect.centerX(); val cy = c.rect.centerY()
+        val dx = cos(c.a); val dy = sin(c.a)
+        val cap = 0.30f * min(c.rect.width(), c.rect.height())
+        val amp = min(13 * dp, cap) * c.inf
+        val rip = 0.18f * min(13 * dp, cap) * c.inf * wob
+        val sig2 = 2f * 0.60f * 0.60f
+        val ph = tSec * 4f
+        val pphi = if (c.press > 0.01f) atan2(pressY - cy, pressX - cx) else 0f
+        val dipA = 8 * dp * c.press
+        tmp.reset()
+        val n = pts.size / 2
+        for (i in 0 until n) {
+            val x = pts[i * 2]; val y = pts[i * 2 + 1]
+            val phi = atan2(y - cy, x - cx)
+            var d = phi - c.a; d = atan2(sin(d), cos(d))
+            var db = phi - (c.a + Math.PI.toFloat()); db = atan2(sin(db), cos(db))
+            var disp = amp * exp(-d * d / sig2) - 0.38f * amp * exp(-db * db / sig2)
+            if (rip != 0f) disp += rip * sin(3f * phi + ph)
+            var nx = x + dx * disp; var ny = y + dy * disp
+            if (dipA > 0f) {
+                var dd = phi - pphi; dd = atan2(sin(dd), cos(dd))
+                val dip = dipA * exp(-dd * dd / (2f * 0.45f * 0.45f))
+                val rl = hypot(x - cx, y - cy).coerceAtLeast(1f)
+                nx -= (x - cx) / rl * dip; ny -= (y - cy) / rl * dip
+            }
+            if (i == 0) tmp.moveTo(nx, ny) else tmp.lineTo(nx, ny)
+        }
+        tmp.close()
+        return tmp
+    }
+
     override fun onDraw(cv: Canvas) {
         cv.drawColor(Color.BLACK)
         val w = width.toFloat(); val pad = 22 * dp
@@ -363,7 +449,7 @@ class MetalView(ctx: Context, private val S: State, private val onZero: () -> Un
         for (c in cmps) {
             cv.save()
             cv.translate(c.tx, c.ty)
-            val swell = 1f + 0.035f * c.inf
+            val swell = 1f + 0.035f * c.inf - 0.030f * c.press
             cv.scale(swell, swell, c.rect.centerX(), c.rect.centerY())
             drawCmp(cv, c)
             cv.restore()
@@ -408,7 +494,7 @@ class MetalView(ctx: Context, private val S: State, private val onZero: () -> Un
                 glowBehind(cv, c, r.height() / 2)
                 // active pill behind "Weekly"
                 val segW = r.width() / 3
-                val pr = RectF(r.left + segW + 3 * dp, r.top + 3 * dp, r.left + 2 * segW - 3 * dp, r.bottom - 3 * dp)
+                val pr = RectF(r.left + segW * segSel + 3 * dp, r.top + 3 * dp, r.left + segW * (segSel + 1) - 3 * dp, r.bottom - 3 * dp)
                 pr.offset(cos(c.a) * 5 * dp * c.inf, sin(c.a) * 2 * dp * c.inf)
                 val pp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                     shader = LinearGradient(pr.left, pr.top, pr.left, pr.bottom,
@@ -420,18 +506,18 @@ class MetalView(ctx: Context, private val S: State, private val onZero: () -> Un
                 pText.textSize = 13 * dp; pText.textAlign = Paint.Align.CENTER
                 val labels = arrayOf("Daily", "Weekly", "Yearly")
                 for (i in 0..2) {
-                    pText.color = if (i == 1) Color.WHITE else Color.rgb(125, 130, 136)
+                    pText.color = if (i == segSel) Color.WHITE else Color.rgb(125, 130, 136)
                     cv.drawText(labels[i], r.left + segW * (i + 0.5f), r.centerY() + 4.5f * dp, pText)
                 }
                 pText.color = Color.WHITE; pText.textAlign = Paint.Align.LEFT
             }
             "toggle" -> {
                 glowBehind(cv, c, r.height() / 2); metalFill(cv, c, r.height() / 2)
-                val kx = r.right - r.height() / 2 - 1 * dp + cos(c.a) * 6 * dp * c.inf
+                val kx = r.left + r.height() / 2 + 1 * dp + (r.width() - r.height() - 2 * dp) * knobT + cos(c.a) * 6 * dp * c.inf
                 knob(cv, kx, r.centerY(), 13 * dp, c, 1.1f)
             }
             "slider" -> {
-                val cy = r.centerY(); val frac = 0.62f
+                val cy = r.centerY(); val frac = sliderFrac
                 pStroke.shader = null; pStroke.strokeWidth = 4 * dp; pStroke.strokeCap = Paint.Cap.ROUND
                 pStroke.color = Color.rgb(38, 41, 45)
                 cv.drawLine(r.left, cy, r.right, cy, pStroke)
