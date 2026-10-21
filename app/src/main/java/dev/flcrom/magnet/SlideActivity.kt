@@ -56,9 +56,11 @@ class SlideActivity : Activity(), SensorEventListener {
         private val pBtnT = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 44f; typeface = Typeface.MONOSPACE; textAlign = Paint.Align.CENTER }
 
         fun btnH() = (height * 0.09f).coerceAtLeast(150f)
-        fun pauseRect() = RectF(24f, height - btnH() - 20f, width / 2f - 14f, height - 20f)
-        fun wipeRect() = RectF(width / 2f + 14f, height - btnH() - 20f, width - 24f, height - 20f)
-        fun inButton(x: Float, y: Float) = pauseRect().contains(x, y) || wipeRect().contains(x, y)
+        var hoverMode = false   // HOVER: finger on glass, magnet above it; samples tagged "h":1
+        fun pauseRect() = RectF(24f, height - btnH() - 20f, width / 3f - 16f, height - 20f)
+        fun wipeRect() = RectF(width / 3f + 8f, height - btnH() - 20f, width * 2f / 3f - 8f, height - 20f)
+        fun modeRect() = RectF(width * 2f / 3f + 16f, height - btnH() - 20f, width - 24f, height - 20f)
+        fun inButton(x: Float, y: Float) = pauseRect().contains(x, y) || wipeRect().contains(x, y) || modeRect().contains(x, y)
 
         fun beginStroke(x: Float, y: Float) { strokes.add(arrayListOf(TrailPt(x, y, SystemClock.elapsedRealtime()))) }
         fun addPath(x: Float, y: Float) { strokes.lastOrNull()?.add(TrailPt(x, y, SystemClock.elapsedRealtime())) }
@@ -101,8 +103,11 @@ class SlideActivity : Activity(), SensorEventListener {
                 // buttons
                 cv.drawRoundRect(pauseRect(), 24f, 24f, pBtn)
                 cv.drawRoundRect(wipeRect(), 24f, 24f, pBtn)
+                val pBtnMode = Paint(pBtn).apply { color = if (hoverMode) Color.rgb(0x6b, 0x4e, 0x00) else Color.rgb(0x21, 0x24, 0x2b) }
+                cv.drawRoundRect(modeRect(), 24f, 24f, pBtnMode)
                 cv.drawText(if (paused) "RESUME" else "PAUSE", pauseRect().centerX(), pauseRect().centerY() + 16f, pBtnT)
                 cv.drawText("WIPE", wipeRect().centerX(), wipeRect().centerY() + 16f, pBtnT)
+                cv.drawText(if (hoverMode) "HOVER" else "TOUCH", modeRect().centerX(), modeRect().centerY() + 16f, pBtnT)
                 if (paused) cv.drawText("paused", cx, height * 0.5f, pTxt)
             }
             postInvalidateDelayed(50)
@@ -126,6 +131,7 @@ class SlideActivity : Activity(), SensorEventListener {
                         touchingButton = false
                         if (v.pauseRect().contains(e.x, e.y)) { paused = !paused; view.performHapticFeedback(HapticFeedbackConstants.CONFIRM) }
                         else if (v.wipeRect().contains(e.x, e.y)) wipe(view)
+                        else if (v.modeRect().contains(e.x, e.y)) { v.hoverMode = !v.hoverMode; view.performHapticFeedback(HapticFeedbackConstants.CONFIRM) }
                         return@setOnTouchListener true
                     }
                     val wasTouching = touching
@@ -200,8 +206,8 @@ class SlideActivity : Activity(), SensorEventListener {
         if (contact) {
             val w2 = writer ?: return
             if (!strokeOpen) { v.beginStroke(tx, ty); strokeOpen = true }
-            w2.write(String.format(Locale.US, "{\"x\":%.4f,\"y\":%.4f,\"r\":[%.2f,%.2f,%.2f],\"ts\":%d}",
-                tx / vw, ty / vh, res[0], res[1], res[2], System.currentTimeMillis()))
+            w2.write(String.format(Locale.US, "{\"x\":%.4f,\"y\":%.4f,\"r\":[%.2f,%.2f,%.2f],\"ts\":%d%s}",
+                tx / vw, ty / vh, res[0], res[1], res[2], System.currentTimeMillis(), if (v.hoverMode) ",\"h\":1" else ""))
             w2.newLine()
             samples++
             if (++sinceFlush >= 50) flush()
