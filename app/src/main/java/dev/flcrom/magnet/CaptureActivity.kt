@@ -34,11 +34,12 @@ class CaptureActivity : Activity(), SensorEventListener {
     private lateinit var v: CapView
 
     inner class CapView(context: Context) : View(context) {
-        private val pDot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.DKGRAY; style = Paint.Style.FILL }
-        private val pDone = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.GRAY; style = Paint.Style.FILL }
-        private val pCur = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 5f }
-        private val pTxt = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 42f; typeface = Typeface.MONOSPACE; textAlign = Paint.Align.CENTER }
-        private val pSub = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.GRAY; textSize = 34f; typeface = Typeface.MONOSPACE; textAlign = Paint.Align.CENTER }
+        private val pDot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.LTGRAY; style = Paint.Style.FILL }
+        private val pDone = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(0x4c, 0xaf, 0x50); style = Paint.Style.FILL }
+        private val pCur = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 7f }
+        private val pCurFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.FILL }
+        private val pTxt = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 56f; typeface = Typeface.MONOSPACE; textAlign = Paint.Align.CENTER }
+        private val pSub = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.LTGRAY; textSize = 42f; typeface = Typeface.MONOSPACE; textAlign = Paint.Align.CENTER }
         fun pt(i: Int): FloatArray {
             val c = i % COLS; val r = i / COLS
             val cc = if (r % 2 == 0) c else COLS - 1 - c   // serpentine
@@ -56,17 +57,18 @@ class CaptureActivity : Activity(), SensorEventListener {
                 1 -> {
                     for (i in 0 until COLS * ROWS) {
                         val p = pt(i)
-                        if (caps[i] != null) cv.drawCircle(p[0], p[1], 16f, pDone)
-                        else cv.drawCircle(p[0], p[1], 10f, pDot)
+                        if (caps[i] != null) cv.drawCircle(p[0], p[1], 22f, pDone)
+                        else cv.drawCircle(p[0], p[1], 14f, pDot)
                     }
                     if (idx < COLS * ROWS) {
                         val p = pt(idx)
-                        val pulse = 26f + 8f * sin(SystemClock.elapsedRealtime() / 180.0).toFloat()
+                        val pulse = 34f + 10f * sin(SystemClock.elapsedRealtime() / 180.0).toFloat()
+                        cv.drawCircle(p[0], p[1], 12f, pCurFill)
                         cv.drawCircle(p[0], p[1], pulse, pCur)
                     }
                     cv.drawText("point ${idx + 1} / ${COLS * ROWS}", cx, height - 110f, pTxt)
                     cv.drawText(if (grabbing) "hold still..." else "rest magnet flat on the lit dot", cx, height - 56f, pSub)
-                    cv.drawText("tap = redo point", cx, 70f, pSub)
+                    cv.drawText("tap anywhere = redo last point", cx, 110f, pSub)
                 }
                 2 -> {
                     cv.drawText("done - model saved", cx, height * 0.45f, pTxt)
@@ -117,7 +119,10 @@ class CaptureActivity : Activity(), SensorEventListener {
         recent.addLast(fixed); while (recent.size > 40) recent.removeFirst()
         if (phase != 1 || idx >= COLS * ROWS) return
         val base = b0 ?: return
-        val res = floatArrayOf(fixed[0] - base[0], fixed[1] - base[1], fixed[2] - base[2])
+        // phone-frame residual, identical to FerrofluidActivity's S.res (raw minus baseline rotated to phone frame)
+        val bp = rot(rotQ, base, true)
+        val m = floatArrayOf(e.values[0], e.values[1], e.values[2])
+        val res = floatArrayOf(m[0] - bp[0], m[1] - bp[1], m[2] - bp[2])
         if (grabbing) {
             grabbed.addLast(res)
             if (grabbed.size >= 50) {

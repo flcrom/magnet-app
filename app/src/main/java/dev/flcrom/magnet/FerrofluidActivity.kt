@@ -33,6 +33,7 @@ class FerrofluidActivity : Activity(), SensorEventListener {
     private lateinit var gl: GLSurfaceView
     private var rotQ = floatArrayOf(0f, 0f, 0f, 1f)
     private var lastTap = 0L
+    private lateinit var renderer: FerroRenderer
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
@@ -44,7 +45,8 @@ class FerrofluidActivity : Activity(), SensorEventListener {
         sm = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         gl = GLSurfaceView(this)
         gl.setEGLContextClientVersion(3)
-        gl.setRenderer(FerroRenderer(S, resources.displayMetrics.widthPixels.toFloat(), resources.displayMetrics.heightPixels.toFloat()))
+        renderer = FerroRenderer(S, resources.displayMetrics.widthPixels.toFloat(), resources.displayMetrics.heightPixels.toFloat())
+        gl.setRenderer(renderer)
         gl.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
         gl.setOnTouchListener { _, e ->
             when (e.actionMasked) {
@@ -72,6 +74,7 @@ class FerrofluidActivity : Activity(), SensorEventListener {
 
     override fun onResume() {
         super.onResume(); gl.onResume()
+        renderer.grid = GridModel.load(filesDir)   // trained by CaptureActivity; null until he trains
         val mag = sm.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD) ?: return
         val grv = sm.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
         sm.registerListener(this, mag, 10000)
@@ -105,6 +108,7 @@ class FerrofluidActivity : Activity(), SensorEventListener {
 }
 
 class FerroRenderer(private val S: State, private val dispW: Float, private val dispH: Float) : GLSurfaceView.Renderer {
+    @Volatile var grid: GridModel? = null
     // react-bits defaults (Ferrofluid.jsx)
     private val CELL = 1f / 3f; private val BOUND_CELL = 1f
     private val INTRO_SECONDS = 2.4f
@@ -263,7 +267,16 @@ class FerroRenderer(private val S: State, private val dispW: Float, private val 
                 val mag = len3(S.res)
                 val sens = 0.5f + S.sens / 50f
                 if (mag > 3f / sens) {
-                    val cl = Classifier.classify(floatArrayOf(S.res[0] * S.flip, S.res[1] * S.flip, S.res[2] * S.flip))
+                    val resF = floatArrayOf(S.res[0] * S.flip, S.res[1] * S.flip, S.res[2] * S.flip)
+                    val est = grid?.estimate(resF)
+                    if (est != null && est.conf > 0.5f) {
+                        // trained grid: magnet position maps straight to a screen point
+                        engaged = true
+                        val gp = groundAt(est.nx * 2 - 1, 1 - est.ny * 2)
+                        px = gp[0]; py = gp[1]
+                        targetStrength = MOUSE_STRENGTH * 1.4f * (0.5f + 0.5f * est.conf)
+                    } else {
+                    val cl = Classifier.classify(resF)
                     val confGate = ((cl.conc - 0.4f) / 0.4f).coerceIn(0f, 1f)
                     val fitGate = ((6f - cl.fit) / 3f).coerceIn(0f, 1f)
                     val lean = (0.6f + 0.4f * ln(cl.k) / ln(2f)).coerceIn(0.2f, 1f) * confGate * fitGate
@@ -274,6 +287,7 @@ class FerroRenderer(private val S: State, private val dispW: Float, private val 
                         px = sin(th).toFloat() * ring * lean
                         py = cos(th).toFloat() * ring * lean
                         targetStrength = MOUSE_STRENGTH * 1.4f * lean.coerceIn(0f, 1f)
+                    }
                     }
                 }
             }
