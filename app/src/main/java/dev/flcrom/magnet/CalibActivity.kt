@@ -137,18 +137,16 @@ class CalibActivity : Activity(), SensorEventListener {
         super.onResume()
         val mag = sm.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD) ?: return
         sm.registerListener(this, mag, 10000)
-        sm.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)?.let { sm.registerListener(this, it, 10000) }
     }
     override fun onPause() { super.onPause(); sm.unregisterListener(this); try { writer?.flush() } catch (_: Throwable) {} }
     override fun onDestroy() { super.onDestroy(); try { writer?.close() } catch (_: Throwable) {} }
 
     override fun onSensorChanged(e: SensorEvent) {
-        if (e.sensor.type == Sensor.TYPE_GAME_ROTATION_VECTOR) {
-            val w = if (e.values.size > 3) e.values[3] else sqrt(max(0f, 1f - e.values[0].pow(2) - e.values[1].pow(2) - e.values[2].pow(2)))
-            rotQ = floatArrayOf(e.values[0], e.values[1], e.values[2], w); return
-        }
         if (e.sensor.type != Sensor.TYPE_MAGNETIC_FIELD) return
-        val fixed = rot(rotQ, floatArrayOf(e.values[0], e.values[1], e.values[2]), false)
+        // RAW sensor frame: rigid with the phone - the game rotation vector's yaw drifts
+        // over a multi-minute session and was scrambling transverse field direction.
+        // Phone lies flat for recording; moment is along phone -z (pole down).
+        val fixed = floatArrayOf(e.values[0], e.values[1], e.values[2])
         live = fixed; liveAt = SystemClock.elapsedRealtime()
         magCount++; val now = SystemClock.elapsedRealtime()
         if (now - rateAt > 1000) { magRate = magCount; magCount = 0; rateAt = now }
