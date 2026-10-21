@@ -48,6 +48,7 @@ class SlideActivity : Activity(), SensorEventListener {
         val estPts = ArrayList<TrailPt>()              // model prediction polyline (breaks on time gaps)
         private val pPath = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 7f; strokeJoin = Paint.Join.ROUND; strokeCap = Paint.Cap.ROUND }
         private val pEst = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(0x22, 0xd3, 0xee); style = Paint.Style.STROKE; strokeWidth = 7f; strokeJoin = Paint.Join.ROUND; strokeCap = Paint.Cap.ROUND }
+        private val pEstDim = Paint(pEst).apply { alpha = 80 }   // low-conf estimates shown dimmed, not hidden
         private val pDot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.FILL }
         private val pTxt = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 52f; typeface = Typeface.MONOSPACE; textAlign = Paint.Align.CENTER }
         private val pSub = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.LTGRAY; textSize = 38f; typeface = Typeface.MONOSPACE; textAlign = Paint.Align.CENTER }
@@ -64,7 +65,7 @@ class SlideActivity : Activity(), SensorEventListener {
 
         fun beginStroke(x: Float, y: Float) { strokes.add(arrayListOf(TrailPt(x, y, SystemClock.elapsedRealtime()))) }
         fun addPath(x: Float, y: Float) { strokes.lastOrNull()?.add(TrailPt(x, y, SystemClock.elapsedRealtime())) }
-        fun addEst(x: Float, y: Float) { estPts.add(TrailPt(x, y, SystemClock.elapsedRealtime())) }
+        fun addEst(x: Float, y: Float, conf: Float) { estPts.add(TrailPt(x, y, SystemClock.elapsedRealtime(), conf)) }
         fun clearAll() { strokes.clear(); estPts.clear() }
 
         override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) { vw = w; vh = h }
@@ -84,11 +85,19 @@ class SlideActivity : Activity(), SensorEventListener {
                     cv.drawPath(path, pPath)
                 }
                 if (estPts.size > 1) {
+                    // dim underlay: every estimate that passed the 0.25 floor
+                    val pathD = Path(); var penD = false; var lastTD = 0L
+                    // bright overlay: only confident (>=0.4) runs
                     val path = Path(); var pen = false; var lastT = 0L
                     for (p in estPts) {
-                        if (!pen || p.t - lastT > 500) { path.moveTo(p.x, p.y); pen = true } else path.lineTo(p.x, p.y)
+                        if (!penD || p.t - lastTD > 500) { pathD.moveTo(p.x, p.y); penD = true } else pathD.lineTo(p.x, p.y)
+                        lastTD = p.t
+                        if (p.c >= 0.4f) {
+                            if (!pen || p.t - lastT > 500) { path.moveTo(p.x, p.y); pen = true } else path.lineTo(p.x, p.y)
+                        } else pen = false
                         lastT = p.t
                     }
+                    cv.drawPath(pathD, pEstDim)
                     cv.drawPath(path, pEst)
                 }
                 if (touching) cv.drawCircle(tx, ty, 22f, pDot)
@@ -212,10 +221,11 @@ class SlideActivity : Activity(), SensorEventListener {
             samples++
             if (++sinceFlush >= 50) flush()
             v.addPath(tx, ty)
-            grid?.estimate(res)?.let { if (it.conf > 0.4f) v.addEst(it.nx * vw, it.ny * vh) }   // freeze trail when unsure, no jumps
+            // conf>=0.4: bright verified trail; 0.25..0.4: dimmed hint (measured 9-23% err there, honest); <0.25: hidden
+            grid?.estimate(res)?.let { if (it.conf > 0.25f) v.addEst(it.nx * vw, it.ny * vh, it.conf) }
         }
     }
     override fun onAccuracyChanged(s: Sensor?, a: Int) {}
 }
 
-data class TrailPt(val x: Float, val y: Float, val t: Long)
+data class TrailPt(val x: Float, val y: Float, val t: Long, val c: Float = 1f)
