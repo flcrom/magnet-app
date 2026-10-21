@@ -44,6 +44,12 @@ class State {
     @Volatile var touchX = -1f
     @Volatile var touchY = -1f
     @Volatile var samples = 0L
+
+    // live magnet estimate published by the renderer for the trail overlay
+    @Volatile var estNX = -1f
+    @Volatile var estNY = -1f
+    @Volatile var estK = 0f
+    @Volatile var estT = 0L
     val buf = ArrayDeque<Pair<Long, FloatArray>>()   // (time, field in fixed frame)
 
     // UI readout

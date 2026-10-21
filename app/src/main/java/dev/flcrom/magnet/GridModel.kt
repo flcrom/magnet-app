@@ -8,24 +8,8 @@ import kotlin.math.*
  *  Per-point best-scale match (same scale ladder as the old classifier) + kNN(3)
  *  inverse-distance interpolation. k of the nearest fingerprint is the normalized
  *  strength (1 = resting on the glass like training, <1 = hovering above). */
-class GridModel(file: File) {
+class GridModel private constructor(private val pts: List<Pt>) {
     private class Pt(val nx: Float, val ny: Float, val r: FloatArray, val std: Float)
-    private val pts: List<Pt>
-
-    init {
-        val root = JSONObject(file.readText())
-        val arr = root.getJSONArray("points")
-        val list = ArrayList<Pt>(arr.length())
-        for (i in 0 until arr.length()) {
-            val o = arr.getJSONObject(i)
-            val r = o.getJSONArray("r")
-            list.add(Pt(
-                o.getDouble("nx").toFloat(), o.getDouble("ny").toFloat(),
-                floatArrayOf(r.getDouble(0).toFloat(), r.getDouble(1).toFloat(), r.getDouble(2).toFloat()),
-                o.getDouble("std").toFloat()))
-        }
-        pts = list
-    }
 
     class Est(val nx: Float, val ny: Float, val conf: Float, val k: Float)
 
@@ -64,7 +48,36 @@ class GridModel(file: File) {
         private val KS = floatArrayOf(0.5f, 0.6f, 0.72f, 0.85f, 1f, 1.18f, 1.4f, 1.7f, 2f)
         fun load(filesDir: File): GridModel? {
             val f = File(filesDir, "magnet_grid.json")
-            return try { if (f.exists()) GridModel(f) else null } catch (t: Throwable) { null }
+            return try {
+                if (!f.exists()) return null
+                val root = JSONObject(f.readText())
+                val arr = root.getJSONArray("points")
+                val list = ArrayList<Pt>(arr.length())
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val r = o.getJSONArray("r")
+                    list.add(Pt(
+                        o.getDouble("nx").toFloat(), o.getDouble("ny").toFloat(),
+                        floatArrayOf(r.getDouble(0).toFloat(), r.getDouble(1).toFloat(), r.getDouble(2).toFloat()),
+                        o.getDouble("std").toFloat()))
+                }
+                // dense slide-training samples, if any (single readings: fixed modest std)
+                val sf = File(filesDir, "magnet_slide.jsonl")
+                if (sf.exists()) {
+                    val extra = ArrayList<Pt>()
+                    sf.forEachLine { line ->
+                        try {
+                            val o = JSONObject(line)
+                            val r = o.getJSONArray("r")
+                            extra.add(Pt(o.getDouble("x").toFloat(), o.getDouble("y").toFloat(),
+                                floatArrayOf(r.getDouble(0).toFloat(), r.getDouble(1).toFloat(), r.getDouble(2).toFloat()), 1.5f))
+                        } catch (_: Throwable) {}
+                    }
+                    val stride = max(1, extra.size / 8000)
+                    for (i in extra.indices step stride) list.add(extra[i])
+                }
+                if (list.size < 3) null else GridModel(list)
+            } catch (t: Throwable) { null }
         }
     }
 }

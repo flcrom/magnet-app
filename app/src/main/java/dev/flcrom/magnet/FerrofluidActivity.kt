@@ -29,6 +29,29 @@ import kotlin.math.*
  */
 class FerrofluidActivity : Activity(), SensorEventListener {
     private val S = State()
+
+    /** Fading cyan trail of the live grid-model magnet estimate, drawn over the GL view. */
+    inner class TrailView(context: android.content.Context) : android.view.View(context) {
+        private val pts = ArrayDeque<TrailDot>()
+        private val pTrail = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.rgb(0x22, 0xd3, 0xee); style = android.graphics.Paint.Style.FILL }
+        private val pNow = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.WHITE; style = android.graphics.Paint.Style.STROKE; strokeWidth = 5f }
+        override fun onDraw(cv: android.graphics.Canvas) {
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (now - S.estT < 250 && S.estNX >= 0 &&
+                (pts.isEmpty() || kotlin.math.hypot(S.estNX * width - pts.last().x, S.estNY * height - pts.last().y) > 0.012f * width))
+                pts.addLast(TrailDot(S.estNX * width, S.estNY * height, now))
+            while (pts.isNotEmpty() && now - pts.first().t > 1600) pts.removeFirst()
+            for (p in pts) {
+                pTrail.alpha = ((1 - (now - p.t) / 1600f) * 200).toInt().coerceIn(0, 200)
+                cv.drawCircle(p.x, p.y, 9f, pTrail)
+            }
+            if (now - S.estT < 400 && S.estNX >= 0)
+                cv.drawCircle(S.estNX * width, S.estNY * height, 18f, pNow)
+            postInvalidateDelayed(50)
+        }
+        fun addPoint(x: Float, y: Float) { pts.addLast(TrailDot(x, y, android.os.SystemClock.elapsedRealtime())) }
+    }
+    private lateinit var trailV: TrailView
     private lateinit var sm: SensorManager
     private lateinit var gl: GLSurfaceView
     private var rotQ = floatArrayOf(0f, 0f, 0f, 1f)
@@ -62,6 +85,10 @@ class FerrofluidActivity : Activity(), SensorEventListener {
             true
         }
         setContentView(gl)
+        trailV = TrailView(this)
+        addContentView(trailV, android.view.ViewGroup.LayoutParams(
+            android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT))
+        trailV.postInvalidateDelayed(50)
     }
 
     private fun zero() {
@@ -261,7 +288,7 @@ class FerroRenderer(private val S: State, private val dispW: Float, private val 
             val gp = groundAt(gx, gy); px = gp[0]; py = gp[1]
             targetStrength = MOUSE_STRENGTH * 1.4f
         } else {
-            val frozen = S.m == null || now - S.t > 1500 || S.same >= 15
+            val frozen = S.m == null || now - S.t > 1500   // identical readings are a PARKED magnet, not a freeze; only a stalled event stream is frozen
             val b0 = S.b0
             if (!frozen && b0 != null) {
                 val mag = len3(S.res)
@@ -275,6 +302,7 @@ class FerroRenderer(private val S: State, private val dispW: Float, private val 
                         val gp = groundAt(est.nx * 2 - 1, 1 - est.ny * 2)
                         px = gp[0]; py = gp[1]
                         targetStrength = MOUSE_STRENGTH * 1.4f * est.k.coerceIn(0f, 1.2f)   // k: 1 = on-glass, <1 = hovering
+                        S.estNX = est.nx; S.estNY = est.ny; S.estK = est.k; S.estT = now
                     } else {
                     val cl = Classifier.classify(resF)
                     val confGate = ((cl.conc - 0.4f) / 0.4f).coerceIn(0f, 1f)
@@ -771,3 +799,5 @@ void main() {
 }"""
     }
 }
+
+private data class TrailDot(val x: Float, val y: Float, val t: Long)
