@@ -189,6 +189,12 @@ class SlideActivity : Activity(), SensorEventListener {
         val m = floatArrayOf(e.values[0], e.values[1], e.values[2])
         val res = floatArrayOf(m[0] - bp[0], m[1] - bp[1], m[2] - bp[2])
         liveMag = len3(res)
+        // slow re-zero (same as the plane): creep baseline when clearly no magnet
+        if (liveMag < 1.2f) {
+            val fix = rot(rotQ, res, false)
+            val bf = rot(rotQ, base, false)
+            b0 = rot(rotQ, floatArrayOf(bf[0] + fix[0] * 0.0006f, bf[1] + fix[1] * 0.0006f, bf[2] + fix[2] * 0.0006f), true)
+        }
         if (phase != 1 || paused) return
         val contact = touching && SystemClock.elapsedRealtime() - strokeStart > 120 && liveMag > 3.5f
         if (contact) {
@@ -200,7 +206,7 @@ class SlideActivity : Activity(), SensorEventListener {
             samples++
             if (++sinceFlush >= 50) flush()
             v.addPath(tx, ty)
-            grid?.estimate(res)?.let { if (it.conf > 0.3f) v.addEst(it.nx * vw, it.ny * vh) }
+            grid?.estimate(res)?.let { if (it.conf > 0.4f) v.addEst(it.nx * vw, it.ny * vh) }   // freeze trail when unsure, no jumps
         }
     }
     override fun onAccuracyChanged(s: Sensor?, a: Int) {}

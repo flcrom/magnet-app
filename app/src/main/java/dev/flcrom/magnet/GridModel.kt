@@ -33,7 +33,7 @@ class GridModel private constructor(
         if (now - lastAt > 700L) post.fill(1f / (NC * NR))   // stroke gap: restart tracking
         lastAt = now
         val rn = sqrt(res[0] * res[0] + res[1] * res[1] + res[2] * res[2])
-        if (rn < 8f) return null
+        if (rn < 3f) return null   // low presence gate near the noise floor; confidence gates quality downstream
         val sig = max(4f, 0.25f * rn)
         val inv2s2 = 1f / (2f * sig * sig)
         // measurement likelihood per cell (best scale per cell)
@@ -62,7 +62,7 @@ class GridModel private constructor(
             sy += v * ((c / NC) + 0.5f) / NR
         }
         // map posterior peak to the legacy 0..1 conf gate (locked-on peak ~0.01..0.1)
-        val conf = (peak / 0.004f).coerceIn(0f, 1f)
+        val conf = (peak / 0.01f).coerceIn(0f, 1f)   // 1.0 = locked; <0.4 = freeze cursor, <0.12 = not present
         return Est(sx, sy, conf, bestK)
     }
 
@@ -97,7 +97,7 @@ class GridModel private constructor(
             for (j in -KERNEL_R..KERNEL_R) { val v = exp(-0.5f * (j / MOT) * (j / MOT)); k[j + KERNEL_R] = v; s += v }
             for (j in k.indices) k[j] /= s
         }
-        private val KS = floatArrayOf(0.06f, 0.09f, 0.13f, 0.2f, 0.3f, 0.45f, 0.65f, 0.85f, 1f, 1.2f, 1.5f, 1.8f)
+        private val KS = floatArrayOf(0.06f, 0.09f, 0.13f, 0.2f, 0.3f, 0.45f, 0.65f, 0.85f, 1f)  // one-sided: never stronger than on-glass (k>1 mainly let collisions win)
 
         fun load(filesDir: File): GridModel? {
             return try {

@@ -131,6 +131,13 @@ class FerrofluidActivity : Activity(), SensorEventListener {
         if (S.same < 15 && b0 != null) {
             val b = rot(rotQ, b0, true)
             S.res = floatArrayOf(m[0] - b[0], m[1] - b[1], m[2] - b[2])
+            // slow re-zero: creep baseline toward current field when clearly no magnet
+            // (kills sensor/environment drift; ~60s time constant, 1.2uT floor keeps weak hover signals)
+            if (len3(S.res) < 1.2f) {
+                val fix = rot(rotQ, S.res, false)
+                val bf = rot(rotQ, b0, false)
+                S.b0 = rot(rotQ, floatArrayOf(bf[0] + fix[0] * 0.0006f, bf[1] + fix[1] * 0.0006f, bf[2] + fix[2] * 0.0006f), true)
+            }
         }
         // one-shot auto-zero ~1.2s after launch with fresh data
         if (S.b0 == null && S.same < 15 && S.buf.size > 20 && now - S.buf.first().first > 1000) zero()
@@ -300,13 +307,18 @@ class FerroRenderer(private val S: State, private val dispW: Float, private val 
                 if (mag > 3f / sens) {
                     val resF = floatArrayOf(S.res[0] * S.flip, S.res[1] * S.flip, S.res[2] * S.flip)
                     val est = grid?.estimate(resF)
-                    if (est != null && est.conf > 0.5f) {
-                        // trained grid: magnet position maps straight to a screen point
+                    if (est != null && est.conf > 0.12f) {
+                        // trained grid: magnet position maps straight to a screen point.
+                        // Low confidence: FREEZE at the last confident position instead of jumping.
                         engaged = true
-                        val gp = groundAt(est.nx * 2 - 1, 1 - est.ny * 2)
+                        val sure = est.conf > 0.4f || S.estT == 0L
+                        val enx = if (sure) est.nx else S.estNX
+                        val eny = if (sure) est.ny else S.estNY
+                        val gp = groundAt(enx * 2 - 1, 1 - eny * 2)
                         px = gp[0]; py = gp[1]
-                        targetStrength = MOUSE_STRENGTH * 1.4f * est.k.coerceIn(0f, 1.2f)   // k: 1 = on-glass, <1 = hovering
-                        S.estNX = est.nx; S.estNY = est.ny; S.estK = est.k; S.estT = now
+                        val cf = (est.conf / 0.4f).coerceIn(0.25f, 1f)   // unsure = weak eruption
+                        targetStrength = MOUSE_STRENGTH * 1.4f * est.k.coerceIn(0f, 1.2f) * cf   // k: 1 = on-glass, <1 = hovering
+                        if (sure) { S.estNX = est.nx; S.estNY = est.ny; S.estK = est.k; S.estT = now }
                     } else {
                     val cl = Classifier.classify(resF)
                     val confGate = ((cl.conc - 0.4f) / 0.4f).coerceIn(0f, 1f)
