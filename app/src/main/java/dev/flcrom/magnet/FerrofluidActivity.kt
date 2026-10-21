@@ -33,17 +33,21 @@ class FerrofluidActivity : Activity(), SensorEventListener {
     /** Fading cyan trail of the live grid-model magnet estimate, drawn over the GL view. */
     inner class TrailView(context: android.content.Context) : android.view.View(context) {
         private val pts = ArrayDeque<TrailDot>()
-        private val pTrail = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.rgb(0x22, 0xd3, 0xee); style = android.graphics.Paint.Style.FILL }
+        private val pTrail = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.rgb(0x22, 0xd3, 0xee); style = android.graphics.Paint.Style.STROKE; strokeWidth = 7f; strokeJoin = android.graphics.Paint.Join.ROUND; strokeCap = android.graphics.Paint.Cap.ROUND; alpha = 200 }
         private val pNow = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.WHITE; style = android.graphics.Paint.Style.STROKE; strokeWidth = 5f }
         override fun onDraw(cv: android.graphics.Canvas) {
             val now = android.os.SystemClock.elapsedRealtime()
             if (now - S.estT < 250 && S.estNX >= 0 &&
-                (pts.isEmpty() || kotlin.math.hypot(S.estNX * width - pts.last().x, S.estNY * height - pts.last().y) > 0.012f * width))
+                (pts.isEmpty() || kotlin.math.hypot(S.estNX * width - pts.last().x, S.estNY * height - pts.last().y) > 0.004f * width))
                 pts.addLast(TrailDot(S.estNX * width, S.estNY * height, now))
-            while (pts.isNotEmpty() && now - pts.first().t > 1600) pts.removeFirst()
-            for (p in pts) {
-                pTrail.alpha = ((1 - (now - p.t) / 1600f) * 200).toInt().coerceIn(0, 200)
-                cv.drawCircle(p.x, p.y, 9f, pTrail)
+            while (pts.isNotEmpty() && now - pts.first().t > 4000) pts.removeFirst()
+            if (pts.size > 1) {
+                val path = android.graphics.Path(); var pen = false; var lastT = 0L
+                for (p in pts) {
+                    if (!pen || p.t - lastT > 500) { path.moveTo(p.x, p.y); pen = true } else path.lineTo(p.x, p.y)
+                    lastT = p.t
+                }
+                cv.drawPath(path, pTrail)
             }
             if (now - S.estT < 400 && S.estNX >= 0)
                 cv.drawCircle(S.estNX * width, S.estNY * height, 18f, pNow)
@@ -800,4 +804,4 @@ void main() {
     }
 }
 
-private data class TrailDot(val x: Float, val y: Float, val t: Long)
+data class TrailDot(val x: Float, val y: Float, val t: Long)
