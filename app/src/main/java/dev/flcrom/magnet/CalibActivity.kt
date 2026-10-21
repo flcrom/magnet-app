@@ -128,6 +128,9 @@ class CalibActivity : Activity(), SensorEventListener {
         buildDots(); buildHDots()
         v = CalView(this)
         setContentView(v)
+        // touch on the VIEW: e.x/e.y are view-local (Activity.onTouchEvent delivers
+        // window coords offset by the status bar, which silently broke button hits)
+        v.setOnTouchListener { _, e -> onCalTouch(e); true }
     }
 
     override fun onResume() {
@@ -223,19 +226,19 @@ class CalibActivity : Activity(), SensorEventListener {
     }
 
     // ---------- touch ----------
-    override fun onTouchEvent(e: MotionEvent): Boolean {
+    private fun onCalTouch(e: MotionEvent) {
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                if (phase == 0) { tryZero(); return true }
+                if (phase == 0) { tryZero(); return }
                 val r = v.hit(e.x, e.y)
                 when (r) {
-                    "point" -> { phase = 1; return true }
-                    "slide" -> { phase = 2; paused = false; return true }
-                    "hover" -> { phase = 3; return true }
-                    "discard" -> { discardSession(); return true }
-                    "pause" -> { paused = !paused; return true }
-                    "undo" -> { undoStroke(); return true }
-                    "h" -> { hIdx = (hIdx + 1) % heights.size; return true }
+                    "point" -> { phase = 1; return }
+                    "slide" -> { phase = 2; paused = false; return }
+                    "hover" -> { phase = 3; return }
+                    "discard" -> { discardSession(); return }
+                    "pause" -> { paused = !paused; return }
+                    "undo" -> { undoStroke(); return }
+                    "h" -> { hIdx = (hIdx + 1) % heights.size; return }
                 }
                 if (phase == 2 && !paused) { touching = true; tx = e.x; ty = e.y; strokeLines = 0; strokeSamples = 0 }
             }
@@ -244,7 +247,6 @@ class CalibActivity : Activity(), SensorEventListener {
                 if (touching) { touching = false; strokeSizes.addLast(strokeLines); try { writer?.flush() } catch (_: Throwable) {} }
             }
         }
-        return true
     }
 
     private fun tryZero() {
