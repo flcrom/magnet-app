@@ -61,5 +61,15 @@
                 android:name="android.service.wallpaper"
                 android:resource="@xml/ferro_wallpaper" />
         </service>
+        <service
+            android:name=".ZeroTileService"
+            android:label="Zero ferrofluid"
+            android:icon="@mipmap/ic_launcher"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

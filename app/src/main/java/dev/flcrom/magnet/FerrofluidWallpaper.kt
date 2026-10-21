@@ -27,7 +27,14 @@ import kotlin.math.sqrt
  */
 class FerrofluidWallpaper : WallpaperService() {
 
+    companion object {
+        // set by the QS tile / double-tap; consumed by the engine's sensor loop (same process)
+        @Volatile var zeroRequestedAt = 0L
+    }
+
     inner class FerroEngine : Engine(), SensorEventListener {
+        private var lastZeroHandled = 0L
+        private var lastWallpaperTap = 0L
         private val S = State()
         private lateinit var sm: SensorManager
         private var rotQ = floatArrayOf(0f, 0f, 0f, 1f)
@@ -47,13 +54,15 @@ class FerrofluidWallpaper : WallpaperService() {
 
         private fun registerSensors() {
             if (sensorsOn) return
-            magSensor?.let { sm.registerListener(this, it, 33000) }   // 30Hz is plenty for a wallpaper
-            grvSensor?.let { sm.registerListener(this, it, 33000) }
+            val okM = magSensor?.let { sm.registerListener(this, it, 33000) }   // 30Hz is plenty for a wallpaper
+            val okG = grvSensor?.let { sm.registerListener(this, it, 33000) }
             sensorsOn = true
+            Log.i("FerroWall", "sensors registered: mag=$okM grv=$okG")
         }
-        private fun unregisterSensors() { if (sensorsOn) { sm.unregisterListener(this); sensorsOn = false } }
+        private fun unregisterSensors() { if (sensorsOn) { sm.unregisterListener(this); sensorsOn = false; Log.i("FerroWall", "sensors unregistered") } }
 
         override fun onVisibilityChanged(v: Boolean) {
+            Log.i("FerroWall", "visibility -> $v")
             visible = v
             if (v) { lastMagAt = SystemClock.elapsedRealtime(); registerSensors() }
             else unregisterSensors()
@@ -88,8 +97,18 @@ class FerrofluidWallpaper : WallpaperService() {
             val old = S.m
             if (old != null && old[0] == m[0] && old[1] == m[1] && old[2] == m[2]) S.same++ else S.same = 0
             S.m = m; S.t = now; S.samples++
+            if (S.samples % 900L == 0L) Log.i("FerroWall", "sensor alive, samples=${S.samples}")
             S.buf.addLast(Pair(now, rot(rotQ, m, false)))
             while (S.buf.isNotEmpty() && now - S.buf.first().first > 1500) S.buf.removeFirst()
+            val zf = File(filesDir, "zero_request")
+            if (zf.exists()) { try { zf.delete() } catch (_: Throwable) {}; zeroRequestedAt = now }
+            if (zeroRequestedAt > lastZeroHandled && S.buf.size >= 8) {
+                lastZeroHandled = zeroRequestedAt
+                val a = S.buf.toList()
+                S.b0 = FloatArray(3) { i -> a.sumOf { it.second[i].toDouble() }.toFloat() / a.size }
+                S.res = floatArrayOf(0f, 0f, 0f)
+                Log.i("FerroWall", "manual zero applied, baseline norm %.1f uT".format(len3(S.b0!!)))
+            }
             val b0 = S.b0
             if (S.same < 15 && b0 != null) {
                 val b = rot(rotQ, b0, true)
@@ -111,6 +130,15 @@ class FerrofluidWallpaper : WallpaperService() {
             // here we only need the timestamp updated, see RenderThread.watchdog()
         }
         override fun onAccuracyChanged(s: Sensor?, a: Int) {}
+
+        override fun onCommand(action: String?, x: Int, y: Int, z: Int, extras: android.os.Bundle?, resultRequested: Boolean): android.os.Bundle? {
+            if (action == "android.wallpaper.tap") {
+                val now = SystemClock.elapsedRealtime()
+                if (now - lastWallpaperTap < 400) { zeroRequestedAt = now; Log.i("FerroWall", "double-tap zero requested") }
+                lastWallpaperTap = now
+            }
+            return super.onCommand(action, x, y, z, extras, resultRequested)
+        }
 
         inner class RenderThread(private val holder: SurfaceHolder) : Thread("FerroWallGL") {
             @Volatile private var running = true
