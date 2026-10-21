@@ -8,18 +8,37 @@ import kotlin.math.*
 /** Magnet position model: per-cell PER-STROKE prototype fingerprints + grid Bayes tracker.
  *  - Strokes split by >1.5s time gaps; each stroke's per-cell mean fingerprint is a separate
  *    prototype (up to 8 per cell), so mixed magnet orientations never average into mush.
- *  - Per-stroke zero alignment: each stroke is corrected by the median offset vs stroke 0 at
- *    same-position pairs with cos>0.9 (kills manual-zero differences between sessions).
- *  - Measurement: min over prototypes and k in {0.06..1.0} (one-sided: never stronger than
- *    on-glass) of ||res - k*fp||; likelihood exp(-d^2/2sig^2), sig = max(4, 0.25*|res|).
+ *  - Per-stroke zero alignment: median offset vs stroke 0 at same-position pairs with cos>0.9
+ *    AND magnitude ratio 0.85..1.18 (looser ratios mean grip/gain change, not zero drift -
+ *    additively "correcting" those warps the map; verified on held-out strokes).
+ *  - Measurement (strength-invariant): position matches on fingerprint DIRECTION
+ *    (1-cos)/0.08 plus a soft log-magnitude term 0.4*|ln(|res|/|fp|)|/0.35, so a weaker
+ *    grip or hover height changes barely move the estimate. Grip gain drift is anisotropic
+ *    (measured 0.47/0.81/1.04 across axes within one session), which no scalar ladder can
+ *    absorb - direction matching killed the resulting constant ~13% position translation
+ *    (held-out shifted stroke: 15.6% -> 7.1% median; v2 LOSO mean 17.2% -> 14.0%).
+ *  - Eruption height k = |res|/|fp| at the winning proto (display only, not used for position).
  *  - Tracking: posterior over 40x60 cells, Gaussian motion blur sigma 3 cells, 1% uniform
- *    mixing, posterior-mean estimate. conf = posterior peak/0.01 (legacy 0..1 gate).
- *  Reference holdout (10557 samples): stroke6 10.5%/25.7% med/p90, stroke1 17.1%/45.5%. */
+ *    mixing, posterior-mean estimate. conf = posterior peak/0.01 (legacy 0..1 gate). */
 class GridModel private constructor(
-    private val proto: FloatArray,   // NC*NR*PMAX*3
+    proto: FloatArray,   // NC*NR*PMAX*3
     private val pcount: IntArray     // NC*NR
 ) {
     class Est(val nx: Float, val ny: Float, val conf: Float, val k: Float)
+
+    // precomputed per-proto unit direction, magnitude and log-magnitude
+    private val pdir = FloatArray(NC * NR * PMAX * 3)
+    private val pmag = FloatArray(NC * NR * PMAX)
+    private val plogmag = FloatArray(NC * NR * PMAX)
+    init {
+        for (i in 0 until NC * NR * PMAX) {
+            val b = i * 3
+            val m = sqrt(proto[b] * proto[b] + proto[b + 1] * proto[b + 1] + proto[b + 2] * proto[b + 2])
+            pmag[i] = m
+            plogmag[i] = ln(max(m, 1e-6f))
+            if (m > 1e-9f) { pdir[b] = proto[b] / m; pdir[b + 1] = proto[b + 1] / m; pdir[b + 2] = proto[b + 2] / m }
+        }
+    }
 
     private val post = FloatArray(NC * NR) { 1f / (NC * NR) }
     private val like = FloatArray(NC * NR)
@@ -33,22 +52,21 @@ class GridModel private constructor(
         lastAt = now
         val rn = sqrt(res[0] * res[0] + res[1] * res[1] + res[2] * res[2])
         if (rn < 3f) return null   // low presence gate near the noise floor; conf gates quality
-        val sig = max(4f, 0.25f * rn)
-        val inv2s2 = 1f / (2f * sig * sig)
-        var bestK = 1f
+        val ux = res[0] / rn; val uy = res[1] / rn; val uz = res[2] / rn
+        val lrm = ln(rn)
         for (c in 0 until NC * NR) {
             val pc = pcount[c]
-            var bd = Float.MAX_VALUE; var bk = 1f
-            val base = c * PMAX * 3
+            var bd = Float.MAX_VALUE
+            val base = c * PMAX
             for (p in 0 until pc) {
-                val fx = proto[base + p * 3]; val fy = proto[base + p * 3 + 1]; val fz = proto[base + p * 3 + 2]
-                for (k in KS) {
-                    val dx = res[0] - k * fx; val dy = res[1] - k * fy; val dz = res[2] - k * fz
-                    val dd = dx * dx + dy * dy + dz * dz
-                    if (dd < bd) { bd = dd; bk = k }
-                }
+                val i = base + p; val b3 = i * 3
+                val cos = pdir[b3] * ux + pdir[b3 + 1] * uy + pdir[b3 + 2] * uz
+                val dang = (1f - cos) / ANGSIG
+                val dl = MAGW * abs(lrm - plogmag[i]) / LSIG
+                val dd = dang * dang + dl * dl
+                if (dd < bd) bd = dd
             }
-            like[c] = exp(-bd * inv2s2)
+            like[c] = exp(-0.5f * bd)
         }
         blur(post, buf)
         val mix = 0.01f / (NC * NR)
@@ -61,18 +79,17 @@ class GridModel private constructor(
             sx += v * ((c % NC) + 0.5f) / NC
             sy += v * ((c / NC) + 0.5f) / NR
         }
-        // k at the peak cell (normalized strength for eruption height)
+        // k at the peak cell = magnitude ratio at the best-direction proto (eruption height only)
+        var bestK = 1f
         if (pcount[peakC] > 0) {
-            var bd = Float.MAX_VALUE
-            val base = peakC * PMAX * 3
+            var bd = Float.MAX_VALUE; var bp = 0
+            val base = peakC * PMAX
             for (p in 0 until pcount[peakC]) {
-                val fx = proto[base + p * 3]; val fy = proto[base + p * 3 + 1]; val fz = proto[base + p * 3 + 2]
-                for (k in KS) {
-                    val dx = res[0] - k * fx; val dy = res[1] - k * fy; val dz = res[2] - k * fz
-                    val dd = dx * dx + dy * dy + dz * dz
-                    if (dd < bd) { bd = dd; bestK = k }
-                }
+                val i = base + p; val b3 = i * 3
+                val cos = pdir[b3] * ux + pdir[b3 + 1] * uy + pdir[b3 + 2] * uz
+                if (1f - cos < bd) { bd = 1f - cos; bp = i }
             }
+            if (pmag[bp] > 1e-6f) bestK = (rn / pmag[bp]).coerceIn(0.05f, 1.5f)
         }
         val conf = (peak / 0.01f).coerceIn(0f, 1f)
         return Est(sx, sy, conf, bestK)
@@ -111,7 +128,9 @@ class GridModel private constructor(
             for (j in -KERNEL_R..KERNEL_R) { val v = exp(-0.5f * (j / MOT) * (j / MOT)); k[j + KERNEL_R] = v; s += v }
             for (j in k.indices) k[j] /= s
         }
-        private val KS = floatArrayOf(0.06f, 0.09f, 0.13f, 0.2f, 0.3f, 0.45f, 0.65f, 0.85f, 1f)  // one-sided: k>1 mainly let collisions win
+        private const val ANGSIG = 0.08f   // direction-match width (1-cos units)
+        private const val LSIG = 0.35f     // soft log-magnitude width
+        private const val MAGW = 0.4f      // magnitude term weight (position must be ~strength-invariant)
 
         fun load(filesDir: File): GridModel? {
             val t0 = System.currentTimeMillis()
@@ -182,8 +201,9 @@ class GridModel private constructor(
                             val na = sqrt(a[0]*a[0]+a[1]*a[1]+a[2]*a[2]); val nb = sqrt(b[0]*b[0]+b[1]*b[1]+b[2]*b[2])
                             val cos = (a[0]*b[0]+a[1]*b[1]+a[2]*b[2]) / max(1e-6f, na * nb)
                             val ratio = na / max(1e-6f, nb)
-                            // cos alone pairs hover vectors with contact ones (huge bogus offsets)
-                            if (cos > 0.9f && ratio in 0.5f..2f) { dxs.add(a[0]-b[0]); dys.add(a[1]-b[1]); dzs.add(a[2]-b[2]) }
+                            // cos alone pairs hover vectors with contact ones (huge bogus offsets);
+                            // looser ratio means grip/gain change, not zero drift - do not pair those
+                            if (cos > 0.9f && ratio in 0.85f..1.18f) { dxs.add(a[0]-b[0]); dys.add(a[1]-b[1]); dzs.add(a[2]-b[2]) }
                         }
                     }
                     if (dxs.size > 30) {
@@ -200,8 +220,8 @@ class GridModel private constructor(
                                 aligned[i] = floatArrayOf(a[0]-ox, a[1]-oy, a[2]-oz)
                             }
                             nAligned++
+                            Log.i(TAG, "stroke $si aligned by [${"%.1f".format(ox)},${"%.1f".format(oy)},${"%.1f".format(oz)}]uT (${dxs.size} pairs)")
                         }
-                        Log.i(TAG, "stroke $si aligned by [${"%.1f".format(ox)},${"%.1f".format(oy)},${"%.1f".format(oz)}]uT (${dxs.size} pairs)")
                     }
                 }
                 // per-stroke prototypes: 8-NN weighted mean per cell, only where the stroke has data
