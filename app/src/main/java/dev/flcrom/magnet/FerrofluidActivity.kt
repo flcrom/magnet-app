@@ -274,7 +274,7 @@ class FerroRenderer(private val S: State, private val dispW: Float, private val 
                         engaged = true
                         val gp = groundAt(est.nx * 2 - 1, 1 - est.ny * 2)
                         px = gp[0]; py = gp[1]
-                        targetStrength = MOUSE_STRENGTH * 1.4f * (0.5f + 0.5f * est.conf)
+                        targetStrength = MOUSE_STRENGTH * 1.4f * est.k.coerceIn(0f, 1.2f)   // k: 1 = on-glass, <1 = hovering
                     } else {
                     val cl = Classifier.classify(resF)
                     val confGate = ((cl.conc - 0.4f) / 0.4f).coerceIn(0f, 1f)
@@ -286,7 +286,7 @@ class FerroRenderer(private val S: State, private val dispW: Float, private val 
                         val ring = 0.22f * worldHeight * min(1f, w.toFloat() / h.toFloat() * 2f)
                         px = sin(th).toFloat() * ring * lean
                         py = cos(th).toFloat() * ring * lean
-                        targetStrength = MOUSE_STRENGTH * 1.4f * lean.coerceIn(0f, 1f)
+                        targetStrength = MOUSE_STRENGTH * 1.4f * (lean * cl.k).coerceIn(0f, 1.2f)
                     }
                     }
                 }
@@ -315,7 +315,7 @@ class FerroRenderer(private val S: State, private val dispW: Float, private val 
         GLES30.glUniform1f(u(simProg, "uTime"), wander)
         GLES30.glUniform2f(u(simProg, "uFlow"), FLOW[0], FLOW[1])
         GLES30.glUniform1f(u(simProg, "uTurbulence"), TURBULENCE)
-        GLES30.glUniform1f(u(simProg, "uMagnetism"), MAGNETISM)
+        GLES30.glUniform1f(u(simProg, "uMagnetism"), 0f)   // user: calm unless magnet - no ambient swells
         GLES30.glUniform1f(u(simProg, "uFieldScale"), 5.5f)
         GLES30.glUniform2f(u(simProg, "uSeed"), VARIATION * 17.31f, VARIATION * 9.73f)
         GLES30.glUniform4f(u(simProg, "uCursor"), curX, curY, curStrength, radius)

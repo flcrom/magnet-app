@@ -5,10 +5,9 @@ import java.io.File
 import kotlin.math.*
 
 /** Screen-grid magnet position model trained by CaptureActivity (magnet_grid.json).
- *  k-nearest-neighbor (k=3) inverse-distance interpolation over the 28 phone-frame
- *  residual fingerprints; confidence from the nearest fingerprint's distance.
- *  Chosen over a Gaussian kernel by leave-one-out on the real capture (17.7% vs 23.7%
- *  median screen error). */
+ *  Per-point best-scale match (same scale ladder as the old classifier) + kNN(3)
+ *  inverse-distance interpolation. k of the nearest fingerprint is the normalized
+ *  strength (1 = resting on the glass like training, <1 = hovering above). */
 class GridModel(file: File) {
     private class Pt(val nx: Float, val ny: Float, val r: FloatArray, val std: Float)
     private val pts: List<Pt>
@@ -28,34 +27,41 @@ class GridModel(file: File) {
         pts = list
     }
 
-    class Est(val nx: Float, val ny: Float, val conf: Float)
+    class Est(val nx: Float, val ny: Float, val conf: Float, val k: Float)
 
     fun estimate(res: FloatArray): Est? {
         if (pts.size < 3) return null
-        val best = arrayOfNulls<Pt>(3)
-        val bestD = doubleArrayOf(Double.MAX_VALUE, Double.MAX_VALUE, Double.MAX_VALUE)
+        var d0 = Double.MAX_VALUE; var d1 = Double.MAX_VALUE; var d2m = Double.MAX_VALUE
+        var p0: Pt? = null; var p1: Pt? = null; var p2: Pt? = null
+        var k0 = 1f; var sg0 = 1f
         for (p in pts) {
-            val dx = res[0] - p.r[0]; val dy = res[1] - p.r[1]; val dz = res[2] - p.r[2]
-            val d2 = (dx * dx + dy * dy + dz * dz).toDouble()
-            if (d2 < bestD[2]) {
-                if (d2 < bestD[1]) {
-                    if (d2 < bestD[0]) { bestD[2] = bestD[1]; best[2] = best[1]; bestD[1] = bestD[0]; best[1] = best[0]; bestD[0] = d2; best[0] = p }
-                    else { bestD[2] = bestD[1]; best[2] = best[1]; bestD[1] = d2; best[1] = p }
-                } else { bestD[2] = d2; best[2] = p }
+            val fn = sqrt(p.r[0] * p.r[0] + p.r[1] * p.r[1] + p.r[2] * p.r[2])
+            var bD = Double.MAX_VALUE; var bK = 1f; var bSg = 1f
+            for (k in KS) {
+                val dx = res[0] - k * p.r[0]; val dy = res[1] - k * p.r[1]; val dz = res[2] - k * p.r[2]
+                val dd = (dx * dx + dy * dy + dz * dz).toDouble()
+                if (dd < bD) { bD = dd; bK = k; bSg = 0.10f * k * fn + 4f + p.std }
+            }
+            if (bD < d2m) {
+                if (bD < d1) {
+                    if (bD < d0) { d2m = d1; p2 = p1; d1 = d0; p1 = p0; d0 = bD; p0 = p; k0 = bK; sg0 = bSg }
+                    else { d2m = d1; p2 = p1; d1 = bD; p1 = p }
+                } else { d2m = bD; p2 = p }
             }
         }
+        if (p0 == null || p1 == null || p2 == null) return null
         var sw = 0.0; var sx = 0.0; var sy = 0.0
+        val dd = doubleArrayOf(d0, d1, d2m); val pp = arrayOf(p0, p1, p2)
         for (i in 0 until 3) {
-            val w = 1.0 / (sqrt(bestD[i]) + 1.0)
-            sw += w; sx += w * best[i]!!.nx; sy += w * best[i]!!.ny
+            val w = 1.0 / (sqrt(dd[i]) + 1.0)
+            sw += w; sx += w * pp[i]!!.nx; sy += w * pp[i]!!.ny
         }
-        val p0 = best[0]!!
-        val sg = 0.10f * sqrt(p0.r[0] * p0.r[0] + p0.r[1] * p0.r[1] + p0.r[2] * p0.r[2]) + 4f + p0.std
-        val conf = exp(-bestD[0] / (2.0 * sg * sg)).toFloat()
-        return Est((sx / sw).toFloat(), (sy / sw).toFloat(), conf)
+        val conf = exp(-d0 / (2.0 * sg0 * sg0)).toFloat()
+        return Est((sx / sw).toFloat(), (sy / sw).toFloat(), conf, k0)
     }
 
     companion object {
+        private val KS = floatArrayOf(0.5f, 0.6f, 0.72f, 0.85f, 1f, 1.18f, 1.4f, 1.7f, 2f)
         fun load(filesDir: File): GridModel? {
             val f = File(filesDir, "magnet_grid.json")
             return try { if (f.exists()) GridModel(f) else null } catch (t: Throwable) { null }
