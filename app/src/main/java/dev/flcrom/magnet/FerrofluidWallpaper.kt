@@ -54,8 +54,8 @@ class FerrofluidWallpaper : WallpaperService() {
 
         private fun registerSensors() {
             if (sensorsOn) return
-            val okM = magSensor?.let { sm.registerListener(this, it, 33000) }   // 30Hz is plenty for a wallpaper
-            val okG = grvSensor?.let { sm.registerListener(this, it, 33000) }
+            val okM = magSensor?.let { sm.registerListener(this, it, 100000) }  // 10Hz: the 30Hz registration starved the co-hosted Termux mag client on this device
+            val okG = grvSensor?.let { sm.registerListener(this, it, 100000) }
             sensorsOn = true
             Log.i("FerroWall", "sensors registered: mag=$okM grv=$okG")
         }
