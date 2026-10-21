@@ -1,6 +1,7 @@
 package dev.flcrom.magnet
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Context
 import android.graphics.*
 import android.hardware.Sensor
@@ -27,7 +28,11 @@ import kotlin.math.*
  *  -> SLIDE (touch-recorded continuous passes, pause/resume, undo last stroke)
  *  -> HOVER (spacer stack 0/2/5/10mm, reduced grid, height tagged).
  *  File: magnet_calib_<yyyyMMdd_HHmmss>.jsonl, meta header + sample lines.
- *  Discard = rename to .discarded (archive, never delete). */
+ *  Discard = rename to .discarded (archive, never delete).
+ *  Zero sanity: far grid dots (y>=0.55) must read <22 uT vs baseline (dialog:
+ *  discard+re-zero or keep), and the field must return under 12 uT within 10 s
+ *  after each capture or a sticky contamination banner shows (both logged as
+ *  "warn" lines in the session file). */
 class CalibActivity : Activity(), SensorEventListener {
     private lateinit var sm: SensorManager
     private var rotQ = floatArrayOf(0f, 0f, 0f, 1f)
@@ -44,6 +49,16 @@ class CalibActivity : Activity(), SensorEventListener {
     private var writer: BufferedWriter? = null
     private var samples = 0
     private var warnUntil = 0L
+
+    // zero-contamination guards: a zero taken with the magnet nearby passes the
+    // |B| range check (bias vector can keep magnitude earthlike) but poisons every
+    // residual. Guard 1: far-grid dots must read < 22 uT (genuine dipole signal
+    // that far from the top-left sensor is ~10-15 uT). Guard 2: between captures
+    // the field must fall back under 12 uT within 10 s of lifting the magnet.
+    private var farWarned = false        // user picked KEEP ANYWAY once this session
+    private var farDialogShowing = false
+    private var highSince = 0L           // resNorm continuously >= 18 uT since
+    private var driftWarn = false        // sticky banner until field returns to baseline
 
     // point mode
     private lateinit var dots: FloatArray   // normalized x,y per dot, serpentine
@@ -109,6 +124,7 @@ class CalibActivity : Activity(), SensorEventListener {
             .put("magnet", "cylindrical, same pole down")
             .put("W_mm", W_MM.toDouble()).put("H_mm", H_MM.toDouble())
             .put("zero", JSONArray(listOf(b[0], b[1], b[2]))).put("zero_std", b0std.toDouble()))
+        farWarned = false; farDialogShowing = false; highSince = 0L; driftWarn = false
     }
 
     private fun discardSession() {
@@ -118,6 +134,7 @@ class CalibActivity : Activity(), SensorEventListener {
         try { f.renameTo(d) } catch (_: Throwable) {}
         phase = 0; b0 = null; samples = 0; captured.clear(); hcaptured.clear()
         strokeSizes.clear(); dotIdx = 0; hdotIdx = 0
+        farWarned = false; farDialogShowing = false; highSince = 0L; driftWarn = false
         v.performHapticFeedback(HapticFeedbackConstants.REJECT)
     }
 
@@ -152,6 +169,18 @@ class CalibActivity : Activity(), SensorEventListener {
         if (now - rateAt > 1000) { magRate = magCount; magCount = 0; rateAt = now }
         recent.addLast(fixed); if (recent.size > 40) recent.removeFirst()
 
+        if (phase == 1 || phase == 3) {
+            val rn = resNorm()
+            if (rn >= 18f) { if (highSince == 0L) highSince = now }
+            else if (rn < 12f) { highSince = 0L; driftWarn = false }
+            if (!driftWarn && highSince != 0L && now - highSince > 10000) {
+                driftWarn = true
+                line(JSONObject().put("type", "warn").put("kind", "baseline_not_returning")
+                    .put("resid_uT", rn.toDouble()).put("ts", System.currentTimeMillis()))
+                v.performHapticFeedback(HapticFeedbackConstants.REJECT)
+            }
+        }
+
         when (phase) {
             1, 3 -> pointSample(fixed, now)
             2 -> slideSample(fixed, now)
@@ -175,23 +204,46 @@ class CalibActivity : Activity(), SensorEventListener {
                 val arr = if (phase == 1) dots else hdots
                 val idx = if (phase == 1) dotIdx else hdotIdx
                 if (idx * 2 + 1 < arr.size) {
-                    val o = JSONObject().put("type", "p")
-                        .put("mode", if (phase == 1) "point" else "hover")
-                        .put("i", idx)
-                        .put("x", arr[idx * 2].toDouble()).put("y", arr[idx * 2 + 1].toDouble())
-                        .put("h", if (phase == 3) heights[hIdx] else 0)
-                        .put("r", JSONArray(listOf(mean[0], mean[1], mean[2])))
-                        .put("r_std", sd.toDouble()).put("n", n)
-                        .put("ts", System.currentTimeMillis())
-                    line(o)
-                    try { writer?.flush() } catch (_: Throwable) {}
-                    if (phase == 1) { captured.add(dotIdx); dotIdx = nextFree(dots, captured) } else { hcaptured.add(hdotIdx); hdotIdx = nextFree(hdots, hcaptured) }
-                    v.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                    val rn = len3(floatArrayOf(mean[0] - b0!![0], mean[1] - b0!![1], mean[2] - b0!![2]))
+                    if (phase == 1 && !farWarned && !farDialogShowing && arr[idx * 2 + 1] >= 0.55f && rn >= 22f) {
+                        // far dot must be quiet: genuine dipole signal this far from the
+                        // top-left sensor is ~10-15 uT; >=22 uT means the zero was taken
+                        // with the magnet too close and every residual is biased.
+                        farDialogShowing = true
+                        line(JSONObject().put("type", "warn").put("kind", "far_dot_contamination")
+                            .put("i", idx).put("resid_uT", rn.toDouble()).put("ts", System.currentTimeMillis()))
+                        try { writer?.flush() } catch (_: Throwable) {}
+                        AlertDialog.Builder(this)
+                            .setTitle("zero looks contaminated")
+                            .setMessage("This far dot reads %.0f uT from baseline; a dot this far from the sensor should read under ~22 uT. The magnet was probably too close when you zeroed, so every measurement in this session is biased.\n\nBest: discard, take the magnet to another room, zero, and redo the grid.".format(rn))
+                            .setPositiveButton("DISCARD + RE-ZERO") { _, _ -> farDialogShowing = false; discardSession() }
+                            .setNegativeButton("KEEP ANYWAY") { _, _ -> farDialogShowing = false; farWarned = true; recordPoint(idx, mean, sd, n) }
+                            .setCancelable(false).show()
+                    } else {
+                        recordPoint(idx, mean, sd, n)
+                    }
                 }
                 win.clear(); winStart = 0
             } else if (now - winStart > 4000) { win.clear(); winStart = 0; warnUntil = now + 1200 }
         }
     }
+    private fun recordPoint(idx: Int, mean: FloatArray, sd: Float, n: Int) {
+        val arr = if (phase == 1) dots else hdots
+        val o = JSONObject().put("type", "p")
+            .put("mode", if (phase == 1) "point" else "hover")
+            .put("i", idx)
+            .put("x", arr[idx * 2].toDouble()).put("y", arr[idx * 2 + 1].toDouble())
+            .put("h", if (phase == 3) heights[hIdx] else 0)
+            .put("r", JSONArray(listOf(mean[0], mean[1], mean[2])))
+            .put("r_std", sd.toDouble()).put("n", n)
+            .put("ts", System.currentTimeMillis())
+        line(o)
+        try { writer?.flush() } catch (_: Throwable) {}
+        if (phase == 1) { captured.add(dotIdx); dotIdx = nextFree(dots, captured) } else { hcaptured.add(hdotIdx); hdotIdx = nextFree(hdots, hcaptured) }
+        v.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+        highSince = 0L; driftWarn = false
+    }
+
     private fun nextFree(arr: FloatArray, done: HashSet<Int>): Int {
         val n = arr.size / 2
         for (i in 0 until n) if (!done.contains(i)) return i
@@ -317,6 +369,7 @@ class CalibActivity : Activity(), SensorEventListener {
                         1 -> {
                             val n = dots.size / 2
                             cv.drawText("hold magnet on the flashing dot (${captured.size}/$n)", cx, 215f, pSub)
+                            if (driftWarn) cv.drawText("field not returning to baseline (%.0f uT) - zero may be contaminated".format(rn), cx, h * 0.52f, pWarn)
                             for (i in 0 until n) {
                                 val px = dots[i * 2] * w; val py = dots[i * 2 + 1] * h
                                 when {
@@ -353,6 +406,7 @@ class CalibActivity : Activity(), SensorEventListener {
                                 }
                             }
                             if (now < warnUntil) cv.drawText("hold still...", cx, h - 40f, pWarn)
+                            if (driftWarn) cv.drawText("field not returning to baseline (%.0f uT) - zero may be contaminated".format(rn), cx, h * 0.52f, pWarn)
                         }
                     }
                 }
